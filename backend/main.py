@@ -474,6 +474,9 @@ async def list_group_jobs(current_user: dict = Depends(get_user_by_token)):
         job_key = f"job:{job_id}"
         job_data = redis_client.hgetall(job_key)
         if job_data:
+            # The job_id is the key of the hash, not a field within it.
+            # We must add it to the dict before passing to the Pydantic model.
+            job_data['job_id'] = job_id
             try:
                 # All values from hgetall are strings, they must be cast to the correct type for the Pydantic model
                 job_data['total_hashes'] = int(job_data.get('total_hashes', 0))
