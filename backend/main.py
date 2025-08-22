@@ -163,16 +163,22 @@ def manage_group_jobs():
         if redis_client.exists(job_key):
             continue
 
-        job_size = random.choice([16, 32, 64])
-        difficulty = 5
+        job_size = random.choice([16, 24, 32, 40, 48, 56, 64])
+        difficulty = random.choice([5, 6, 7])
         
-        # New reward structure
-        rewards = {
-            16: {"reward_per_hash": 0.001, "bonus": 0.01},
-            32: {"reward_per_hash": 0.0012, "bonus": 0.0205},
-            64: {"reward_per_hash": 0.0015, "bonus": 0.0425}
+        # New reward structure with difficulty multipliers
+        base_reward_per_hash = 0.001
+        base_bonus = 0.01
+
+        difficulty_multipliers = {
+            5: 1.0,   # Easy
+            6: 1.15,  # Intermediate
+            7: 1.3    # Hard
         }
-        reward_per_hash = rewards[job_size]["reward_per_hash"]
+        
+        # Scale base rewards by job size
+        size_multiplier = job_size / 16
+        reward_per_hash = base_reward_per_hash * size_multiplier
         
         job_data = {
             "total_hashes": job_size,
@@ -537,18 +543,32 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
 
     # --- Distribute Bonus if Job was Completed ---
     if job_was_completed:
-        bonus_pools = {16: 0.01, 32: 0.0205, 64: 0.0425}
-        bonus_amount = bonus_pools.get(total_hashes, 0)
+        # Recalculate the bonus based on the new structure
+        base_bonus = 0.01
+        size_multiplier = total_hashes / 16
+        
+        difficulty_multipliers = {
+            5: 1.0,
+            6: 1.15,
+            7: 1.3
+        }
+        difficulty = int(redis_client.hget(job_key, "difficulty") or 5)
+        bonus_multiplier = difficulty_multipliers.get(difficulty, 1.0)
+
+        bonus_amount = (base_bonus * size_multiplier) * bonus_multiplier
         
         contributors = redis_client.hgetall(contribution_key)
         total_contributions = sum(int(c) for c in contributors.values())
 
         if bonus_amount > 0 and total_contributions > 0:
             bonus_pipe = redis_client.pipeline()
+            user_specific_bonuses = {} # To hold the bonus for each user
+
             for username, count_str in contributors.items():
                 contribution_count = int(count_str)
                 percentage = contribution_count / total_contributions
                 user_bonus = bonus_amount * percentage
+                user_specific_bonuses[username] = user_bonus
                 
                 # Fetch user, update balance, and save
                 contrib_user_data_str = redis_client.get(f"user:{username}")
@@ -564,13 +584,20 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
             
             bonus_pipe.execute()
 
-    return {
+    final_response = {
         "message": "Proof accepted! Reward granted.",
         "new_balance": user_data["balance"],
         "job_id": job_id,
         "hashes_completed": hashes_completed,
         "total_hashes": total_hashes
     }
+
+    if job_was_completed:
+        my_bonus = user_specific_bonuses.get(current_user['username'], 0)
+        final_response["bonus_awarded"] = my_bonus
+        final_response["message"] = "Final proof accepted! Job complete. Bonus distributed."
+
+    return final_response
 
 @app.get("/activity", response_model=List[ActivityLog])
 async def get_activity(current_user: dict = Depends(get_user_by_token)):

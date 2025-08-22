@@ -472,15 +472,14 @@ class CryptoClient:
         print("="*70)
 
         unsolved_challenges = job.get('challenges', [])
-        if not unsolved_challenges:
-            print("❌ This job has no more unsolved hashes. It may be completed.")
-            return
-
-        while True: # Keep mining until user stops or a hash is found
+        
+        while unsolved_challenges:
             try:
                 # Pick a random, valid challenge from the list provided by the server
                 challenge = random.choice(unsolved_challenges)
                 target_difficulty = job['difficulty']
+                print(f"Now working on challenge: {challenge[:12]}... [{len(unsolved_challenges)} remaining]")
+
                 nonce = 0
                 hash_found = None
                 
@@ -510,20 +509,37 @@ class CryptoClient:
                         print(f"✅ SUCCESS! Your proof was accepted.")
                         print(f"💰 You earned {job['reward_per_hash']:.6f} $JEFE. Your new balance is {data['new_balance']:.6f}.")
                         print(f"Job progress: {data['hashes_completed']} / {data['total_hashes']}")
-                        break # Exit the mining loop after success
+                        
+                        # Remove the solved challenge and continue to the next one
+                        unsolved_challenges.remove(challenge)
+                        
+                        # --- Check for Job Completion ---
+                        if "bonus_awarded" in data:
+                            print("\n" + "="*70)
+                            print("🎉 JOB COMPLETE! 🎉")
+                            print(f"As a contributor, you have been awarded a bonus of {data['bonus_awarded']:.6f} $JEFE!")
+                            print("="*70)
+                            break # Exit the main while loop
+
+                        if not unsolved_challenges:
+                            print("\n🏁 All available challenges for this job have been solved from your end!")
+                            break # Exit the main while loop
                     elif response.status_code == 409: # Conflict - hash already solved
-                        print("🟡 Someone else solved that hash first. Trying again...")
+                        print("🟡 Someone else solved that hash first. Trying a different one...")
+                        unsolved_challenges.remove(challenge)
                     else:
                         error_data = response.json()
                         print(f"❌ Proof rejected by server: {error_data.get('detail', 'Unknown error')}")
                         print("Restarting mining process...")
                 
             except KeyboardInterrupt:
-                print("\n🛑 Mining stopped.")
-                break
+                print("\n🛑 Mining stopped by user.")
+                return # Use return to exit the function immediately
             except requests.exceptions.RequestException as e:
                 print(f"❌ Connection error: {e}. Stopping mining.")
-                break
+                return # Use return to exit the function immediately
+        
+        print("\n🏁 Group job mining session finished.")
 
     def main_menu(self):
         """Display the main menu based on server status and login state."""
