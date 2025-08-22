@@ -99,7 +99,8 @@ class GroupJob(BaseModel):
     difficulty: int
     status: str
     expires_at: str
-    challenges: List[str]
+    challenges: List[str] # This will be the full list for client-side variety if needed
+    current_challenge: Optional[str] = None # The single hash everyone is working on
 
 class SubmitProofPayload(BaseModel):
     job_id: str
@@ -197,6 +198,8 @@ def manage_group_jobs():
         pipe = redis_client.pipeline()
         pipe.hset(job_key, mapping=job_data)
         pipe.sadd(hashes_to_solve_key, *challenges)
+        # Set the initial target challenge
+        pipe.hset(job_key, "current_challenge", challenges[0])
         pipe.sadd(active_jobs_key, job_id)
         pipe.execute()
 
@@ -474,6 +477,7 @@ async def get_group_jobs(current_user: dict = Depends(get_user_by_token)):
             # Also fetch the list of unsolved challenges
             challenges = redis_client.smembers(f"job:{job_id}:hashes")
             job_data['challenges'] = list(challenges)
+            # The current_challenge is already in job_data from hgetall
             jobs.append(GroupJob(job_id=job_id, **job_data))
     return sorted(jobs, key=lambda j: j.total_hashes)
 
@@ -493,6 +497,11 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
     # --- Validation ---
     if not redis_client.exists(job_key) or redis_client.hget(job_key, "status") != "active":
         raise HTTPException(status_code=400, detail="This job is no longer active.")
+
+    # --- NEW: Check if the submitted proof is for the CURRENT target challenge ---
+    target_challenge = redis_client.hget(job_key, "current_challenge")
+    if challenge != target_challenge:
+        raise HTTPException(status_code=400, detail="This is not the current target challenge for the job.")
 
     # Verify the proof of work itself
     difficulty = int(redis_client.hget(job_key, "difficulty"))
@@ -535,6 +544,10 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
         job_was_completed = True
         pipe.hset(job_key, "status", "completed")
         pipe.srem("group_jobs:active", job_id)
+    else:
+        # Not the last hash, so pick a new target challenge from the remaining set
+        new_target = redis_client.srandmember(hashes_to_solve_key)
+        pipe.hset(job_key, "current_challenge", new_target)
 
     pipe.execute()
 

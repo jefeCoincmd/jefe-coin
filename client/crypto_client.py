@@ -440,13 +440,15 @@ class CryptoClient:
                 if not jobs:
                     print("No active group jobs available. Check back later!")
                 else:
-                    print(f"{'ID':<18} {'Progress':<18} {'Reward/Hash':<18} {'Status'}")
-                    print("-" * 70)
+                    print(f"{'ID':<18} {'Progress':<18} {'Reward/Hash':<18} {'Difficulty':<15} {'Status'}")
+                    print("-" * 80)
+                    difficulty_map = {5: "Easy", 6: "Intermediate", 7: "Hard"}
                     for job in jobs:
                         progress = f"{job['hashes_completed']} / {job['total_hashes']}"
                         reward = f"{job['reward_per_hash']:.6f} $JEFE"
-                        print(f"{job['job_id']:<18} {progress:<18} {reward:<18} {job['status']}")
-                    print("="*70)
+                        difficulty = difficulty_map.get(job['difficulty'], "Unknown")
+                        print(f"{job['job_id']:<18} {progress:<18} {reward:<18} {difficulty:<15} {job['status']}")
+                    print("="*80)
                     
                     # Prompt user to work on a job
                     job_choice_id = input("Enter the ID of the job you want to work on (or press Enter to cancel): ").strip()
@@ -471,27 +473,39 @@ class CryptoClient:
         print("Press Ctrl+C to stop mining.")
         print("="*70)
 
-        unsolved_challenges = job.get('challenges', [])
-        
-        while unsolved_challenges:
+        target_challenge = job.get('current_challenge')
+        if not target_challenge:
+            print("❌ This job does not have an active target challenge. It may be completed or bugged.")
+            return
+
+        while True:
             try:
-                # Pick a random, valid challenge from the list provided by the server
-                challenge = random.choice(unsolved_challenges)
+                challenge = target_challenge
                 target_difficulty = job['difficulty']
-                print(f"Now working on challenge: {challenge[:12]}... [{len(unsolved_challenges)} remaining]")
+                print(f"Working on target challenge: {challenge[:12]}...")
 
                 nonce = 0
                 hash_found = None
                 
-                # A very short, intense burst of mining
+                # A longer, more verbose mining attempt
                 start_time = time.time()
-                while time.time() - start_time < 2:
+                last_heartbeat = start_time
+                
+                # We'll try for a longer duration on each challenge
+                while time.time() - start_time < 15:
+                    nonce += 1
                     test_string = f"{challenge}{nonce}"
                     test_hash = hashlib.sha256(test_string.encode()).hexdigest()
+                    
                     if test_hash.startswith('0' * target_difficulty):
                         hash_found = test_hash
                         break
-                    nonce += 1
+
+                    # Provide a heartbeat to show the client is working
+                    current_time = time.time()
+                    if current_time - last_heartbeat > 3:
+                        print(f"    (Mining... nonce at {nonce:,})")
+                        last_heartbeat = current_time
                 
                 if hash_found:
                     print(f"Found a potential proof! Submitting to server...")
@@ -510,9 +524,6 @@ class CryptoClient:
                         print(f"💰 You earned {job['reward_per_hash']:.6f} $JEFE. Your new balance is {data['new_balance']:.6f}.")
                         print(f"Job progress: {data['hashes_completed']} / {data['total_hashes']}")
                         
-                        # Remove the solved challenge and continue to the next one
-                        unsolved_challenges.remove(challenge)
-                        
                         # --- Check for Job Completion ---
                         if "bonus_awarded" in data:
                             print("\n" + "="*70)
@@ -520,17 +531,22 @@ class CryptoClient:
                             print(f"As a contributor, you have been awarded a bonus of {data['bonus_awarded']:.6f} $JEFE!")
                             print("="*70)
                             break # Exit the main while loop
-
-                        if not unsolved_challenges:
-                            print("\n🏁 All available challenges for this job have been solved from your end!")
-                            break # Exit the main while loop
+                        else:
+                            print("\nServer has assigned a new target. Re-entering the Group Jobs menu...")
+                            time.sleep(3)
+                            break # A new target is available, so we exit to the menu.
+                            
                     elif response.status_code == 409: # Conflict - hash already solved
-                        print("🟡 Someone else solved that hash first. Trying a different one...")
-                        unsolved_challenges.remove(challenge)
+                        print("🟡 Someone else solved that hash just now. Re-entering the Group Jobs menu to get the new target...")
+                        time.sleep(3)
+                        break
                     else:
                         error_data = response.json()
                         print(f"❌ Proof rejected by server: {error_data.get('detail', 'Unknown error')}")
-                        print("Restarting mining process...")
+                        print("Stopping mining.")
+                        break
+                else:
+                    print("    (No solution found in this attempt. The community is still working on it. Retrying...)")
                 
             except KeyboardInterrupt:
                 print("\n🛑 Mining stopped by user.")
