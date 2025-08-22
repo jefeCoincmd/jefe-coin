@@ -22,7 +22,7 @@ services:
   - type: web
     name: cryptosim-frontend
     env: static
-    plan: free
+    plan: starter
     buildCommand: echo "Static site - no build needed"
     staticPublishPath: ./frontend
     routes:
