@@ -434,6 +434,25 @@ async def get_app_stats():
         "total_users": total_users
     }
 
+@app.post("/admin/clear-all-jobs", status_code=200)
+async def admin_clear_jobs():
+    """
+    TEMPORARY ADMIN FUNCTION: Deletes all active group jobs, forcing regeneration.
+    """
+    active_jobs_key = "group_jobs:active"
+    active_job_ids = redis_client.smembers(active_jobs_key)
+    
+    pipe = redis_client.pipeline()
+    for job_id in active_job_ids:
+        pipe.delete(f"job:{job_id}")
+        pipe.delete(f"job:{job_id}:hashes")
+        pipe.delete(f"job:{job_id}:contributors")
+    
+    pipe.delete(active_jobs_key)
+    pipe.execute()
+
+    return {"message": f"Successfully deleted {len(active_job_ids)} active jobs. New jobs will be generated on the next request to /groupjobs."}
+
 @app.get("/groupjobs", response_model=List[GroupJob])
 async def get_group_jobs(current_user: dict = Depends(get_user_by_token)):
     """
