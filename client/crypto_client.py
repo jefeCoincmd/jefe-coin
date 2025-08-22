@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 import secrets
 import hashlib
+import random # Added for random.choice
 
 from config import API_BASE_URL, REQUEST_TIMEOUT
 
@@ -470,11 +471,15 @@ class CryptoClient:
         print("Press Ctrl+C to stop mining.")
         print("="*70)
 
+        unsolved_challenges = job.get('challenges', [])
+        if not unsolved_challenges:
+            print("❌ This job has no more unsolved hashes. It may be completed.")
+            return
+
         while True: # Keep mining until user stops or a hash is found
             try:
-                # The "challenge" for a group job is one of the hashes in its set. We simulate this by generating one.
-                # The server will validate if it's a legitimate, unsolved hash from the job's set.
-                challenge = secrets.token_hex(16)
+                # Pick a random, valid challenge from the list provided by the server
+                challenge = random.choice(unsolved_challenges)
                 target_difficulty = job['difficulty']
                 nonce = 0
                 hash_found = None

@@ -99,6 +99,7 @@ class GroupJob(BaseModel):
     difficulty: int
     status: str
     expires_at: str
+    challenges: List[str]
 
 class SubmitProofPayload(BaseModel):
     job_id: str
@@ -164,7 +165,7 @@ def manage_group_jobs():
 
         total_hashes = random.choice([16, 32, 64])
         difficulty = 5
-        reward_per_hash = 0.01 * (total_hashes / 16) # Scale reward with difficulty
+        reward_per_hash = 0.002 * (total_hashes / 16) # Scale reward with difficulty
         
         job_data = {
             "total_hashes": total_hashes,
@@ -438,6 +439,9 @@ async def get_group_jobs(current_user: dict = Depends(get_user_by_token)):
     for job_id in active_job_ids:
         job_data = redis_client.hgetall(f"job:{job_id}")
         if job_data:
+            # Also fetch the list of unsolved challenges
+            challenges = redis_client.smembers(f"job:{job_id}:hashes")
+            job_data['challenges'] = list(challenges)
             jobs.append(GroupJob(job_id=job_id, **job_data))
     return sorted(jobs, key=lambda j: j.total_hashes)
 
@@ -480,6 +484,11 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
     user_data["balance"] += reward_per_hash
     user_data["total_mined"] += reward_per_hash
     
+    # --- Track Contribution ---
+    contribution_key = f"job:{job_id}:contributors"
+    # HINCRBY will increment the user's contribution count for this job by 1
+    redis_client.hincrby(contribution_key, current_user['username'], 1)
+
     hashes_completed = redis_client.hincrby(job_key, "hashes_completed", 1)
     
     # --- Finalize ---
@@ -489,14 +498,45 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
     
     # Check if this was the final hash
     total_hashes = int(redis_client.hget(job_key, "total_hashes"))
+    job_was_completed = False
     if hashes_completed >= total_hashes:
+        job_was_completed = True
         pipe.hset(job_key, "status", "completed")
         pipe.srem("group_jobs:active", job_id)
 
     pipe.execute()
 
-    # Add activity log
+    # Add activity log for the individual hash
     add_activity(current_user['username'], "group_mine", reward_per_hash, f"Job: {job_id[:8]}...")
+
+    # --- Distribute Bonus if Job was Completed ---
+    if job_was_completed:
+        bonus_pools = {16: 0.05, 32: 0.105, 64: 0.225}
+        bonus_amount = bonus_pools.get(total_hashes, 0)
+        
+        contributors = redis_client.hgetall(contribution_key)
+        total_contributions = sum(int(c) for c in contributors.values())
+
+        if bonus_amount > 0 and total_contributions > 0:
+            bonus_pipe = redis_client.pipeline()
+            for username, count_str in contributors.items():
+                contribution_count = int(count_str)
+                percentage = contribution_count / total_contributions
+                user_bonus = bonus_amount * percentage
+                
+                # Fetch user, update balance, and save
+                contrib_user_data_str = redis_client.get(f"user:{username}")
+                if contrib_user_data_str:
+                    contrib_user_data = json.loads(contrib_user_data_str)
+                    contrib_user_data["balance"] += user_bonus
+                    
+                    bonus_pipe.set(f"user:{username}", json.dumps(contrib_user_data))
+                    bonus_pipe.zadd("leaderboard", {username: contrib_user_data["balance"]})
+                    
+                    # Use a separate function call for activity log to ensure correct timestamp
+                    add_activity(username, "group_bonus", user_bonus, f"Job: {job_id[:8]} Completed!")
+            
+            bonus_pipe.execute()
 
     return {
         "message": "Proof accepted! Reward granted.",
