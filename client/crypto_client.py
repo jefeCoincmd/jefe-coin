@@ -8,6 +8,8 @@ from pathlib import Path
 import secrets
 import hashlib
 import random # Added for random.choice
+import asyncio
+import websockets
 
 from config import API_BASE_URL, REQUEST_TIMEOUT
 
@@ -473,88 +475,73 @@ class CryptoClient:
         print("Press Ctrl+C to stop mining.")
         print("="*70)
 
-        target_challenge = job.get('current_challenge')
-        if not target_challenge:
-            print("❌ This job does not have an active target challenge. It may be completed or bugged.")
-            return
+        # The new logic will be handled in a dedicated async function
+        try:
+            asyncio.run(self.mine_group_job_async(job))
+        except KeyboardInterrupt:
+            print("\n🛑 Mining stopped by user.")
+        except Exception as e:
+            print(f"\nAn unexpected error occurred: {e}")
 
-        while True:
-            try:
-                challenge = target_challenge
-                target_difficulty = job['difficulty']
-                print(f"Working on target challenge: {challenge[:12]}...")
-
-                nonce = 0
-                hash_found = None
-                
-                # A longer, more verbose mining attempt
-                start_time = time.time()
-                last_heartbeat = start_time
-                
-                # We'll try for a longer duration on each challenge
-                while time.time() - start_time < 15:
-                    nonce += 1
-                    test_string = f"{challenge}{nonce}"
-                    test_hash = hashlib.sha256(test_string.encode()).hexdigest()
-                    
-                    if test_hash.startswith('0' * target_difficulty):
-                        hash_found = test_hash
-                        break
-
-                    # Provide a heartbeat to show the client is working
-                    current_time = time.time()
-                    if current_time - last_heartbeat > 3:
-                        print(f"    (Mining... nonce at {nonce:,})")
-                        last_heartbeat = current_time
-                
-                if hash_found:
-                    print(f"Found a potential proof! Submitting to server...")
-                    headers = {"Authorization": f"Bearer {self.token}"}
-                    payload = {
-                        "job_id": job['job_id'],
-                        "challenge": challenge,
-                        "nonce": nonce,
-                        "hash_found": hash_found
-                    }
-                    response = requests.post(f"{self.api_url}/groupjobs/submit", headers=headers, json=payload)
-
-                    if response.status_code == 200:
-                        data = response.json()
-                        print(f"✅ SUCCESS! Your proof was accepted.")
-                        print(f"💰 You earned {job['reward_per_hash']:.6f} $JEFE. Your new balance is {data['new_balance']:.6f}.")
-                        print(f"Job progress: {data['hashes_completed']} / {data['total_hashes']}")
-                        
-                        # --- Check for Job Completion ---
-                        if "bonus_awarded" in data:
-                            print("\n" + "="*70)
-                            print("🎉 JOB COMPLETE! 🎉")
-                            print(f"As a contributor, you have been awarded a bonus of {data['bonus_awarded']:.6f} $JEFE!")
-                            print("="*70)
-                            break # Exit the main while loop
-                        else:
-                            print("\nServer has assigned a new target. Re-entering the Group Jobs menu...")
-                            time.sleep(3)
-                            break # A new target is available, so we exit to the menu.
-                            
-                    elif response.status_code == 409: # Conflict - hash already solved
-                        print("🟡 Someone else solved that hash just now. Re-entering the Group Jobs menu to get the new target...")
-                        time.sleep(3)
-                        break
-                    else:
-                        error_data = response.json()
-                        print(f"❌ Proof rejected by server: {error_data.get('detail', 'Unknown error')}")
-                        print("Stopping mining.")
-                        break
-                else:
-                    print("    (No solution found in this attempt. The community is still working on it. Retrying...)")
-                
-            except KeyboardInterrupt:
-                print("\n🛑 Mining stopped by user.")
-                return # Use return to exit the function immediately
-            except requests.exceptions.RequestException as e:
-                print(f"❌ Connection error: {e}. Stopping mining.")
-                return # Use return to exit the function immediately
+    async def mine_group_job_async(self, job):
+        """Handles the async mining and websocket communication for a group job."""
+        job_id = job['job_id']
+        ws_url = API_BASE_URL.replace("http", "ws", 1) + f"/ws/{job_id}"
         
+        try:
+            async with websockets.connect(ws_url) as websocket:
+                print("✅ Real-time connection to job established.")
+                
+                # The main mining loop
+                current_challenge = job.get('current_challenge')
+                while current_challenge:
+                    print(f"Working on target challenge: {current_challenge[:12]}...")
+
+                    # Start the mining task in a separate process/thread to keep the websocket responsive
+                    # For simplicity in a console app, we'll simulate this with a short, intense mining burst
+                    # and rely on the server to reject stale proofs. A full implementation would use multiprocessing.
+                    
+                    nonce = 0
+                    hash_found = None
+                    start_time = time.time()
+                    
+                    while time.time() - start_time < 5: # Short burst
+                        nonce += 1
+                        test_string = f"{current_challenge}{nonce}"
+                        test_hash = hashlib.sha256(test_string.encode()).hexdigest()
+                        if test_hash.startswith('0' * job['difficulty']):
+                            hash_found = test_hash
+                            break
+                    
+                    if hash_found:
+                        print(f"Found a potential proof! Submitting...")
+                        headers = {"Authorization": f"Bearer {self.token}"}
+                        payload = {"job_id": job_id, "challenge": current_challenge, "nonce": nonce, "hash_found": hash_found}
+                        response = requests.post(f"{self.api_url}/groupjobs/submit", headers=headers, json=payload)
+
+                        if response.status_code != 200:
+                            print(f"Proof rejected. The target may have changed.")
+
+                    # --- Listen for updates from the server ---
+                    try:
+                        message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                        data = json.loads(message)
+                        if data.get('type') == 'new_target':
+                            print(f" R E A L - T I M E  U P D A T E ")
+                            print(f"Server assigned new target: {data['new_challenge'][:12]}...")
+                            current_challenge = data['new_challenge']
+                        elif data.get('type') == 'job_complete':
+                            print("\n🎉 JOB COMPLETE! 🎉 A final proof was submitted by the community.")
+                            break
+                    except asyncio.TimeoutError:
+                        # No message from server, continue mining the same challenge
+                        pass
+
+        except websockets.exceptions.ConnectionClosed as e:
+            print(f"❌ Real-time connection to job lost: {e}")
+        except Exception as e:
+            print(f"❌ An error occurred during the mining session: {e}")
+
         print("\n🏁 Group job mining session finished.")
 
     def main_menu(self):

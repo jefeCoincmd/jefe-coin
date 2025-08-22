@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 import pytz
 import random
+import asyncio
 
 # Explicitly find and load the .env file from the project root
 env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -202,6 +203,32 @@ def manage_group_jobs():
         pipe.hset(job_key, "current_challenge", challenges[0])
         pipe.sadd(active_jobs_key, job_id)
         pipe.execute()
+
+# --- WebSocket Connection Manager ---
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: dict[str, list[WebSocket]] = {}
+
+    async def connect(self, websocket: WebSocket, job_id: str):
+        await websocket.accept()
+        if job_id not in self.active_connections:
+            self.active_connections[job_id] = []
+        self.active_connections[job_id].append(websocket)
+
+    def disconnect(self, websocket: WebSocket, job_id: str):
+        if job_id in self.active_connections:
+            self.active_connections[job_id].remove(websocket)
+
+    async def broadcast(self, message: str, job_id: str):
+        if job_id in self.active_connections:
+            # Create a list of tasks to run them concurrently
+            tasks = [connection.send_text(message) for connection in self.active_connections[job_id]]
+            await asyncio.gather(*tasks)
+
+manager = ConnectionManager()
+
+# --- End WebSocket Manager ---
+
 
 def generate_wallet_address():
     """Generate a unique wallet address"""
@@ -550,6 +577,11 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
         pipe.hset(job_key, "current_challenge", new_target)
 
     pipe.execute()
+    
+    # --- Broadcast the new target to all connected clients ---
+    if not job_was_completed:
+        new_target_message = json.dumps({"type": "new_target", "job_id": job_id, "new_challenge": new_target})
+        asyncio.run(manager.broadcast(new_target_message, job_id))
 
     # Add activity log for the individual hash
     add_activity(current_user['username'], "group_mine", reward_per_hash, f"Job: {job_id[:8]}...")
@@ -609,8 +641,24 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
         my_bonus = user_specific_bonuses.get(current_user['username'], 0)
         final_response["bonus_awarded"] = my_bonus
         final_response["message"] = "Final proof accepted! Job complete. Bonus distributed."
+    
+    # Send final message to clients if the job was completed
+    if job_was_completed:
+        final_message = json.dumps({"type": "job_complete", "job_id": job_id})
+        asyncio.run(manager.broadcast(final_message, job_id))
 
     return final_response
+
+@app.websocket("/ws/{job_id}")
+async def websocket_endpoint(websocket: WebSocket, job_id: str):
+    await manager.connect(websocket, job_id)
+    try:
+        while True:
+            # Keep the connection alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, job_id)
+
 
 @app.get("/activity", response_model=List[ActivityLog])
 async def get_activity(current_user: dict = Depends(get_user_by_token)):
