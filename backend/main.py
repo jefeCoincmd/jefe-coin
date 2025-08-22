@@ -574,7 +574,18 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
     else:
         # Not the last hash, so pick a new target challenge from the remaining set
         new_target = redis_client.srandmember(hashes_to_solve_key)
-        pipe.hset(job_key, "current_challenge", new_target)
+
+        # --- Defensive check for race condition ---
+        # It's possible another process solved the last hash between our check
+        # and the srandmember call. If new_target is None, the set is empty.
+        if new_target:
+            pipe.hset(job_key, "current_challenge", new_target)
+        else:
+            # The race condition occurred. Treat the job as complete now.
+            job_was_completed = True # This will prevent the "new_target" broadcast
+            pipe.hset(job_key, "current_challenge", "")
+            pipe.srem(active_jobs_key, job_id)
+
 
     pipe.execute()
     

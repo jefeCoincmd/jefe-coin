@@ -517,21 +517,58 @@ class CryptoClient:
                         print(f"Found a potential proof! Submitting...")
                         headers = {"Authorization": f"Bearer {self.token}"}
                         payload = {"job_id": job_id, "challenge": current_challenge, "nonce": nonce, "hash_found": hash_found}
-                        response = requests.post(f"{self.api_url}/groupjobs/submit", headers=headers, json=payload)
+                        response = requests.post(f"{self.api_url}/groupjobs/submit", headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
 
-                        if response.status_code != 200:
-                            print(f"Proof rejected. The target may have changed.")
+                        if response.status_code == 200:
+                            data = response.json()
+                            print(f"✅ SUCCESS! Your proof was accepted.")
+                            print(f"💰 You earned {job['reward_per_hash']:.6f} $JEFE. New balance: {data['new_balance']:.6f}.")
+                        else:
+                            # Proof was rejected, likely because the target changed.
+                            try:
+                                error_detail = response.json().get('detail', 'Unknown error')
+                                print(f"❌ Proof rejected: {error_detail}")
+                                
+                                # Since our proof was rejected, we are out of sync.
+                                # Proactively fetch the current state to resync.
+                                print("    Resyncing with server to get latest target...")
+                                headers = {"Authorization": f"Bearer {self.token}"}
+                                refreshed_jobs_response = requests.get(f"{self.api_url}/groupjobs", headers=headers, timeout=REQUEST_TIMEOUT)
+                                if refreshed_jobs_response.status_code == 200:
+                                    refreshed_jobs = refreshed_jobs_response.json()
+                                    current_job_data = next((j for j in refreshed_jobs if j['job_id'] == job_id), None)
+                                    if current_job_data and current_job_data.get('current_challenge'):
+                                        new_challenge = current_job_data.get('current_challenge')
+                                        if new_challenge != current_challenge:
+                                            print(f"    Server assigned new target: {new_challenge[:12]}...")
+                                            current_challenge = new_challenge
+                                        else:
+                                            print("    Target is the same. There might be another issue.")
+                                    else:
+                                        print("    Job seems to be complete or gone. Stopping.")
+                                        current_challenge = None # This will stop the loop
+                                else:
+                                    print("    Failed to resync with server. Stopping.")
+                                    current_challenge = None # This will stop the loop
+                            except (requests.exceptions.JSONDecodeError, json.JSONDecodeError):
+                                print(f"❌ Proof rejected with status {response.status_code}, and response was not valid JSON.")
+                                current_challenge = None # Stop on weird errors
 
                     # --- Listen for updates from the server ---
                     try:
                         message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
                         data = json.loads(message)
                         if data.get('type') == 'new_target':
-                            print(f" R E A L - T I M E  U P D A T E ")
-                            print(f"Server assigned new target: {data['new_challenge'][:12]}...")
-                            current_challenge = data['new_challenge']
+                            new_challenge = data['new_challenge']
+                            # Only print and switch if it's a genuinely new challenge
+                            if new_challenge != current_challenge:
+                                print(f"\n>> R E A L - T I M E   U P D A T E <<")
+                                print(f"Server assigned new target: {new_challenge[:12]}...")
+                                current_challenge = new_challenge
+                                continue # Immediately start next loop on the new challenge
                         elif data.get('type') == 'job_complete':
                             print("\n🎉 JOB COMPLETE! 🎉 A final proof was submitted by the community.")
+                            current_challenge = None # This will stop the main while loop
                             break
                     except asyncio.TimeoutError:
                         # No message from server, continue mining the same challenge
