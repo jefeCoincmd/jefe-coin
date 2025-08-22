@@ -13,6 +13,7 @@ import bcrypt
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from pathlib import Path
+import pytz
 
 # Explicitly find and load the .env file from the project root
 env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -89,7 +90,33 @@ class StatsResponse(BaseModel):
     total_coins_in_circulation: float
     total_users: int
 
+class ActivityLog(BaseModel):
+    timestamp: str
+    action: str
+    amount: float
+    note: str
+
 # Helper functions
+def get_est_time():
+    """Returns the current time in Eastern Standard Time as an ISO 8601 string."""
+    utc_now = datetime.utcnow().replace(tzinfo=pytz.utc)
+    est_tz = pytz.timezone('US/Eastern')
+    return utc_now.astimezone(est_tz).isoformat()
+
+def add_activity(username: str, action: str, amount: float, note: str):
+    """Adds a new entry to a user's activity log."""
+    log_key = f"activity:{username}"
+    log_entry = {
+        "timestamp": get_est_time(),
+        "action": action,
+        "amount": amount,
+        "note": note
+    }
+    # LPUSH adds the new entry to the start of the list
+    redis_client.lpush(log_key, json.dumps(log_entry))
+    # LTRIM keeps the list capped at the most recent 10 entries
+    redis_client.ltrim(log_key, 0, 9)
+
 def generate_wallet_address():
     """Generate a unique wallet address"""
     return f"0x{secrets.token_hex(20)}"
@@ -159,6 +186,9 @@ async def sync_offline_activity(payload: SyncPayload, current_user: dict = Depen
         
         # Update leaderboard
         redis_client.zadd("leaderboard", {current_user['username']: user_data["balance"]})
+
+        # Add activity log entry
+        add_activity(current_user['username'], "sync_offline", total_coins_earned, f"Hash: {hash_found[:12]}...")
 
     return {
         "message": f"Sync successful. Validated {valid_proofs_count} of {len(payload.proofs)} proofs.",
@@ -301,6 +331,10 @@ async def transfer_coins(payload: TransferPayload, current_user: dict = Depends(
     pipe.zadd("leaderboard", {recipient_username: recipient_data["balance"]})
     pipe.execute()
 
+    # --- Add Activity Logs ---
+    add_activity(sender_username, "send", -amount, f"To: {recipient_username[:8]}...")
+    add_activity(recipient_username, "receive", amount, f"From: {sender_username}")
+
     return {
         "message": "Transfer successful",
         "sender_new_balance": sender_data["balance"],
@@ -322,6 +356,17 @@ async def get_app_stats():
         "total_coins_in_circulation": total_coins,
         "total_users": total_users
     }
+
+@app.get("/activity", response_model=List[ActivityLog])
+async def get_activity(current_user: dict = Depends(get_user_by_token)):
+    """
+    Retrieves the last 10 activity log entries for the current user.
+    """
+    log_key = f"activity:{current_user['username']}"
+    raw_logs = redis_client.lrange(log_key, 0, 9)
+    
+    activity_logs = [json.loads(log) for log in raw_logs]
+    return activity_logs
 
 @app.get("/balance", response_model=UserResponse)
 async def get_balance(current_user: dict = Depends(get_user_by_token)):
@@ -381,6 +426,9 @@ async def mine_crypto(current_user: dict = Depends(get_user_by_token)):
         # Update leaderboard
         redis_client.zadd("leaderboard", {current_user['username']: user_data["balance"]})
         
+        # Add activity log entry
+        add_activity(current_user['username'], "mine_online", coins_earned, f"Hash: {hash_found[:12]}...")
+
         return MiningResult(
             success=True,
             coins_earned=coins_earned,

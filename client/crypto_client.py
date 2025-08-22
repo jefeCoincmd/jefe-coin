@@ -388,6 +388,42 @@ class CryptoClient:
         except requests.exceptions.RequestException as e:
             print(f"❌ Connection error: {e}")
             
+    def show_activity(self):
+        """Fetches and displays the user's last 10 activities."""
+        print("\n" + "="*70)
+        print("📜 RECENT ACTIVITY")
+        print("="*70)
+
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"}
+            response = requests.get(f"{self.api_url}/activity", headers=headers, timeout=REQUEST_TIMEOUT)
+
+            if response.status_code == 200:
+                activities = response.json()
+                if not activities:
+                    print("No recent activity found.")
+                else:
+                    print(f"{'Timestamp (EST)':<28} {'Action':<12} {'Amount':<15} {'Note'}")
+                    print("-" * 70)
+                    for log in activities:
+                        # Parse and format the timestamp
+                        ts = datetime.fromisoformat(log['timestamp'])
+                        ts_formatted = ts.strftime('%Y-%m-%d %H:%M:%S')
+                        
+                        # Format amount with sign and color
+                        amount = log['amount']
+                        action = log['action']
+                        
+                        amount_str = f"{amount:+.6f} $JEFE"
+
+                        print(f"{ts_formatted:<28} {action:<12} {amount_str:<15} {log['note']}")
+                print("="*70)
+            else:
+                print("❌ Failed to fetch activity log.")
+
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Connection error: {e}")
+            
     def main_menu(self):
         """Display the main menu based on server status and login state."""
         is_server_up = self.check_server_status()
@@ -412,11 +448,12 @@ class CryptoClient:
                     print("1. 💰 Check Balance")
                     print("2. ⛏️  Start Mining (Online)")
                     print("3. 💸 Send Coins")
-                    print("4. 🏆 View Leaderboard")
-                    print("5. 🚪 Logout")
-                    print("6. ❌ Exit")
+                    print("4. 📜 Recent Activity")
+                    print("5. 🏆 View Leaderboard")
+                    print("6. 🚪 Logout")
+                    print("7. ❌ Exit")
                     
-                    choice = input("\nSelect an option (1-6): ").strip()
+                    choice = input("\nSelect an option (1-7): ").strip()
                     
                     if choice == "1":
                         self.get_balance()
@@ -425,10 +462,12 @@ class CryptoClient:
                     elif choice == "3":
                         self.send_coins()
                     elif choice == "4":
-                        self.show_leaderboard()
+                        self.show_activity()
                     elif choice == "5":
-                        self.logout_user()
+                        self.show_leaderboard()
                     elif choice == "6":
+                        self.logout_user()
+                    elif choice == "7":
                         print("👋 Thanks for using JEFE COIN!")
                         break
                     else:
