@@ -163,12 +163,19 @@ def manage_group_jobs():
         if redis_client.exists(job_key):
             continue
 
-        total_hashes = random.choice([16, 32, 64])
+        job_size = random.choice([16, 32, 64])
         difficulty = 5
-        reward_per_hash = 0.002 * (total_hashes / 16) # Scale reward with difficulty
+        
+        # New reward structure
+        rewards = {
+            16: {"reward_per_hash": 0.001, "bonus": 0.01},
+            32: {"reward_per_hash": 0.0012, "bonus": 0.0205},
+            64: {"reward_per_hash": 0.0015, "bonus": 0.0425}
+        }
+        reward_per_hash = rewards[job_size]["reward_per_hash"]
         
         job_data = {
-            "total_hashes": total_hashes,
+            "total_hashes": job_size,
             "hashes_completed": 0,
             "reward_per_hash": reward_per_hash,
             "difficulty": difficulty,
@@ -178,7 +185,7 @@ def manage_group_jobs():
         
         # Create the set of hashes to be solved for this job FIRST
         hashes_to_solve_key = f"job:{job_id}:hashes"
-        challenges = [secrets.token_hex(16) for _ in range(total_hashes)]
+        challenges = [secrets.token_hex(16) for _ in range(job_size)]
         
         # Use a pipeline to ensure atomicity
         pipe = redis_client.pipeline()
@@ -511,7 +518,7 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
 
     # --- Distribute Bonus if Job was Completed ---
     if job_was_completed:
-        bonus_pools = {16: 0.05, 32: 0.105, 64: 0.225}
+        bonus_pools = {16: 0.01, 32: 0.0205, 64: 0.0425}
         bonus_amount = bonus_pools.get(total_hashes, 0)
         
         contributors = redis_client.hgetall(contribution_key)

@@ -449,9 +449,9 @@ class CryptoClient:
                     print("="*70)
                     
                     # Prompt user to work on a job
-                    job_choice = input("Enter the ID of the job you want to work on (or press Enter to cancel): ").strip()
-                    if job_choice:
-                        selected_job = next((job for job in jobs if job['job_id'] == job_choice), None)
+                    job_choice_id = input("Enter the ID of the job you want to work on (or press Enter to cancel): ").strip()
+                    if job_choice_id:
+                        selected_job = next((job for job in jobs if job['job_id'] == job_choice_id), None)
                         if selected_job:
                             self.mine_group_job(selected_job)
                         else:
