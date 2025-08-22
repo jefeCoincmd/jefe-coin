@@ -423,7 +423,103 @@ class CryptoClient:
 
         except requests.exceptions.RequestException as e:
             print(f"❌ Connection error: {e}")
-            
+
+    def show_group_jobs(self):
+        """Fetches and displays the list of active group jobs."""
+        print("\n" + "="*70)
+        print("🤝 GROUP MINING JOBS")
+        print("="*70)
+
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"}
+            response = requests.get(f"{self.api_url}/groupjobs", headers=headers, timeout=REQUEST_TIMEOUT)
+
+            if response.status_code == 200:
+                jobs = response.json()
+                if not jobs:
+                    print("No active group jobs available. Check back later!")
+                else:
+                    print(f"{'ID':<18} {'Progress':<18} {'Reward/Hash':<18} {'Status'}")
+                    print("-" * 70)
+                    for job in jobs:
+                        progress = f"{job['hashes_completed']} / {job['total_hashes']}"
+                        reward = f"{job['reward_per_hash']:.6f} $JEFE"
+                        print(f"{job['job_id']:<18} {progress:<18} {reward:<18} {job['status']}")
+                    print("="*70)
+                    
+                    # Prompt user to work on a job
+                    job_choice = input("Enter the ID of the job you want to work on (or press Enter to cancel): ").strip()
+                    if job_choice:
+                        selected_job = next((job for job in jobs if job['job_id'] == job_choice), None)
+                        if selected_job:
+                            self.mine_group_job(selected_job)
+                        else:
+                            print("❌ Invalid job ID.")
+
+            else:
+                print("❌ Failed to fetch group jobs.")
+
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Connection error: {e}")
+
+    def mine_group_job(self, job):
+        """Starts mining on a specific hash for a group job."""
+        print("\n" + "="*70)
+        print(f"⛏️  Working on Group Job: {job['job_id']}")
+        print(f"🎯 Target Difficulty: {job['difficulty']} leading zeros")
+        print("Press Ctrl+C to stop mining.")
+        print("="*70)
+
+        while True: # Keep mining until user stops or a hash is found
+            try:
+                # The "challenge" for a group job is one of the hashes in its set. We simulate this by generating one.
+                # The server will validate if it's a legitimate, unsolved hash from the job's set.
+                challenge = secrets.token_hex(16)
+                target_difficulty = job['difficulty']
+                nonce = 0
+                hash_found = None
+                
+                # A very short, intense burst of mining
+                start_time = time.time()
+                while time.time() - start_time < 2:
+                    test_string = f"{challenge}{nonce}"
+                    test_hash = hashlib.sha256(test_string.encode()).hexdigest()
+                    if test_hash.startswith('0' * target_difficulty):
+                        hash_found = test_hash
+                        break
+                    nonce += 1
+                
+                if hash_found:
+                    print(f"Found a potential proof! Submitting to server...")
+                    headers = {"Authorization": f"Bearer {self.token}"}
+                    payload = {
+                        "job_id": job['job_id'],
+                        "challenge": challenge,
+                        "nonce": nonce,
+                        "hash_found": hash_found
+                    }
+                    response = requests.post(f"{self.api_url}/groupjobs/submit", headers=headers, json=payload)
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        print(f"✅ SUCCESS! Your proof was accepted.")
+                        print(f"💰 You earned {job['reward_per_hash']:.6f} $JEFE. Your new balance is {data['new_balance']:.6f}.")
+                        print(f"Job progress: {data['hashes_completed']} / {data['total_hashes']}")
+                        break # Exit the mining loop after success
+                    elif response.status_code == 409: # Conflict - hash already solved
+                        print("🟡 Someone else solved that hash first. Trying again...")
+                    else:
+                        error_data = response.json()
+                        print(f"❌ Proof rejected by server: {error_data.get('detail', 'Unknown error')}")
+                        print("Restarting mining process...")
+                
+            except KeyboardInterrupt:
+                print("\n🛑 Mining stopped.")
+                break
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Connection error: {e}. Stopping mining.")
+                break
+
     def main_menu(self):
         """Display the main menu based on server status and login state."""
         is_server_up = self.check_server_status()
@@ -448,12 +544,13 @@ class CryptoClient:
                     print("1. 💰 Check Balance")
                     print("2. ⛏️  Start Mining (Online)")
                     print("3. 💸 Send Coins")
-                    print("4. 📜 Recent Activity")
-                    print("5. 🏆 View Leaderboard")
-                    print("6. 🚪 Logout")
-                    print("7. ❌ Exit")
+                    print("4. 🤝 Group Jobs")
+                    print("5. 📜 Recent Activity")
+                    print("6. 🏆 View Leaderboard")
+                    print("7. 🚪 Logout")
+                    print("8. ❌ Exit")
                     
-                    choice = input("\nSelect an option (1-7): ").strip()
+                    choice = input("\nSelect an option (1-8): ").strip()
                     
                     if choice == "1":
                         self.get_balance()
@@ -462,12 +559,14 @@ class CryptoClient:
                     elif choice == "3":
                         self.send_coins()
                     elif choice == "4":
-                        self.show_activity()
+                        self.show_group_jobs()
                     elif choice == "5":
-                        self.show_leaderboard()
+                        self.show_activity()
                     elif choice == "6":
-                        self.logout_user()
+                        self.show_leaderboard()
                     elif choice == "7":
+                        self.logout_user()
+                    elif choice == "8":
                         print("👋 Thanks for using JEFE COIN!")
                         break
                     else:
