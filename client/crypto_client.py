@@ -46,8 +46,8 @@ class CryptoClient:
         """Print the application banner"""
         banner = """
 ╔══════════════════════════════════════════════════════════════╗
-║                    💎 JEFE COIN 💎                    ║
-║                   The Official JEFE COIN Client                  ║
+║                    💎 JEFE COIN 💎                           ║
+║                   The Official JEFE COIN Client              ║
 ╚══════════════════════════════════════════════════════════════╝
         """
         print(banner)
@@ -355,20 +355,32 @@ class CryptoClient:
             print("\n❌ Mining failed - no valid hash found in time limit.")
 
     def show_leaderboard(self):
-        """Show the global leaderboard"""
+        """Show the global leaderboard and total coin supply."""
         try:
-            response = requests.get(f"{self.api_url}/leaderboard")
+            # First, get the overall stats
+            stats_response = requests.get(f"{self.api_url}/stats", timeout=REQUEST_TIMEOUT)
+            total_coins_str = "N/A"
+            if stats_response.status_code == 200:
+                stats_data = stats_response.json()
+                total_coins_str = f"{stats_data.get('total_coins_in_circulation', 0):.6f} $JEFE"
+
+            # Then, get the leaderboard data
+            leaderboard_response = requests.get(f"{self.api_url}/leaderboard", timeout=REQUEST_TIMEOUT)
             
-            if response.status_code == 200:
-                leaderboard = response.json()
+            if leaderboard_response.status_code == 200:
+                leaderboard = leaderboard_response.json()
                 print("\n" + "="*70)
                 print("🏆 GLOBAL LEADERBOARD")
+                print(f"💰 Total Circulation: {total_coins_str}")
                 print("="*70)
                 print(f"{'Rank':<5} {'Username':<20} {'Balance':<15} {'Total Mined':<15}")
                 print("-" * 70)
                 
-                for entry in leaderboard[:20]:  # Show top 20
-                    print(f"{entry['rank']:<5} {entry['username']:<20} {entry['balance']:<15.6f} {entry['total_mined']:<15.6f}")
+                if not leaderboard:
+                    print("No users found on the leaderboard yet.")
+                else:
+                    for entry in leaderboard[:20]:  # Show top 20
+                        print(f"{entry['rank']:<5} {entry['username']:<20} {entry['balance']:<15.6f} {entry['total_mined']:<15.6f}")
                 print("="*70)
             else:
                 print("❌ Failed to load leaderboard!")

@@ -85,6 +85,10 @@ class TransferPayload(BaseModel):
 class SyncPayload(BaseModel):
     proofs: List[dict]
 
+class StatsResponse(BaseModel):
+    total_coins_in_circulation: float
+    total_users: int
+
 # Helper functions
 def generate_wallet_address():
     """Generate a unique wallet address"""
@@ -301,6 +305,22 @@ async def transfer_coins(payload: TransferPayload, current_user: dict = Depends(
         "message": "Transfer successful",
         "sender_new_balance": sender_data["balance"],
         "recipient_username": recipient_username
+    }
+
+@app.get("/stats", response_model=StatsResponse)
+async def get_app_stats():
+    """
+    Calculates and returns application-wide statistics.
+    """
+    # Get all scores (balances) from the leaderboard
+    all_users_with_scores = redis_client.zrange("leaderboard", 0, -1, withscores=True)
+    
+    total_coins = sum(score for member, score in all_users_with_scores)
+    total_users = len(all_users_with_scores)
+
+    return {
+        "total_coins_in_circulation": total_coins,
+        "total_users": total_users
     }
 
 @app.get("/balance", response_model=UserResponse)

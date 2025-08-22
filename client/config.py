@@ -1,8 +1,8 @@
 # JEFE COIN Client Configuration
 
 # API Configuration
-# This is your public server address from ngrok.
-API_BASE_URL = "https://d6b3128dfd59.ngrok-free.app"
+# This is your public server address from render.
+API_BASE_URL = "https://jefe-coin.onrender.com"
 
 # Connection settings
 REQUEST_TIMEOUT = 10  # seconds
