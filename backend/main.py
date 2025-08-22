@@ -543,27 +543,16 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
 
     # --- Distribute Bonus if Job was Completed ---
     if job_was_completed:
-        # Recalculate the bonus based on the new structure
-        base_bonus = 0.01
-        size_multiplier = total_hashes / 16
-        
-        difficulty_multipliers = {
-            5: 1.0,
-            6: 1.15,
-            7: 1.3
-        }
-        difficulty = int(redis_client.hget(job_key, "difficulty") or 5)
-        bonus_multiplier = difficulty_multipliers.get(difficulty, 1.0)
+        bonus_pools = {16: 0.01, 32: 0.0205, 64: 0.0425}
+        bonus_amount = bonus_pools.get(total_hashes, 0)
+        user_specific_bonuses = {} # Initialize dictionary here
 
-        bonus_amount = (base_bonus * size_multiplier) * bonus_multiplier
-        
         contributors = redis_client.hgetall(contribution_key)
         total_contributions = sum(int(c) for c in contributors.values())
 
         if bonus_amount > 0 and total_contributions > 0:
             bonus_pipe = redis_client.pipeline()
-            user_specific_bonuses = {} # To hold the bonus for each user
-
+            
             for username, count_str in contributors.items():
                 contribution_count = int(count_str)
                 percentage = contribution_count / total_contributions

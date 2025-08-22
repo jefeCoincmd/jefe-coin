@@ -531,8 +531,10 @@ class CryptoClient:
                         unsolved_challenges.remove(challenge)
                     else:
                         error_data = response.json()
-                        print(f"❌ Proof rejected by server: {error_data.get('detail', 'Unknown error')}")
-                        print("Restarting mining process...")
+                        print(f"❌ Proof rejected by server: {error_data.get('detail', 'Unknown error')}. Trying a different challenge.")
+                        # Remove the failing challenge to prevent an infinite loop
+                        if challenge in unsolved_challenges:
+                            unsolved_challenges.remove(challenge)
                 
             except KeyboardInterrupt:
                 print("\n🛑 Mining stopped by user.")
