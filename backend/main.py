@@ -95,14 +95,13 @@ class GroupJob(BaseModel):
     job_id: str
     total_hashes: int
     hashes_completed: int
-    difficulty: int
     reward_per_hash: float
-    bonus: float
+    difficulty: int
     status: str
-    created_at: str
-    challenges: list[str] = [] # Now includes the list of challenges
+    expires_at: str
+    challenges: List[str]
 
-class ProofOfWork(BaseModel):
+class SubmitProofPayload(BaseModel):
     job_id: str
     challenge: str
     nonce: int
@@ -191,7 +190,7 @@ def manage_group_jobs():
         }
         
         # Create the set of hashes to be solved for this job FIRST
-        hashes_to_solve_key = f"job:{job_id}:hashes_to_solve"
+        hashes_to_solve_key = f"job:{job_id}:hashes"
         challenges = [secrets.token_hex(16) for _ in range(job_size)]
         
         # Use a pipeline to ensure atomicity
@@ -452,8 +451,8 @@ async def admin_clear_jobs():
     pipe = redis_client.pipeline()
     for job_id in active_job_ids:
         pipe.delete(f"job:{job_id}")
-        pipe.delete(f"job:{job_id}:hashes_to_solve")
-        pipe.delete(f"job:{job_id}:contributions")
+        pipe.delete(f"job:{job_id}:hashes")
+        pipe.delete(f"job:{job_id}:contributors")
     
     pipe.delete(active_jobs_key)
     pipe.execute()
@@ -461,114 +460,140 @@ async def admin_clear_jobs():
     return {"message": f"Successfully deleted {len(active_job_ids)} active jobs. New jobs will be generated on the next request to /groupjobs."}
 
 @app.get("/groupjobs", response_model=List[GroupJob])
-async def list_group_jobs(current_user: dict = Depends(get_user_by_token)):
-    """List all active group jobs."""
-    # Ensure there are jobs to be listed. This will create new ones if none are active.
-    manage_group_jobs()
-
-    active_jobs_key = "group_jobs:active"
-    active_job_ids = redis_client.smembers(active_jobs_key)
+async def get_group_jobs(current_user: dict = Depends(get_user_by_token)):
+    """
+    Manages and retrieves the list of active group jobs.
+    """
+    manage_group_jobs() # Ensure jobs are up-to-date before serving
     
+    active_job_ids = redis_client.smembers("group_jobs:active")
     jobs = []
     for job_id in active_job_ids:
-        job_key = f"job:{job_id}"
-        job_data = redis_client.hgetall(job_key)
+        job_data = redis_client.hgetall(f"job:{job_id}")
         if job_data:
-            # The job_id is the key of the hash, not a field within it.
-            # We must add it to the dict before passing to the Pydantic model.
-            job_data['job_id'] = job_id
-            try:
-                # All values from hgetall are strings, they must be cast to the correct type for the Pydantic model
-                job_data['total_hashes'] = int(job_data.get('total_hashes', 0))
-                job_data['hashes_completed'] = int(job_data.get('hashes_completed', 0))
-                job_data['difficulty'] = int(job_data.get('difficulty', 5))
-                job_data['reward_per_hash'] = float(job_data.get('reward_per_hash', 0))
-                job_data['bonus'] = float(job_data.get('bonus', 0))
-                
-                # Get the remaining challenges
-                hashes_to_solve_key = f"job:{job_id}:hashes_to_solve"
-                job_data['challenges'] = list(redis_client.smembers(hashes_to_solve_key))
-
-                jobs.append(GroupJob(**job_data))
-            except (ValueError, TypeError, KeyError) as e:
-                # This will prevent one malformed job in Redis from crashing the whole endpoint
-                print(f"WARNING: Skipping malformed group job {job_id}. Reason: {e}")
-                continue
-            
+            # Also fetch the list of unsolved challenges
+            challenges = redis_client.smembers(f"job:{job_id}:hashes")
+            job_data['challenges'] = list(challenges)
+            jobs.append(GroupJob(job_id=job_id, **job_data))
     return sorted(jobs, key=lambda j: j.total_hashes)
 
-@app.post("/groupjobs/submit", response_model=dict)
-async def submit_group_job_proof(proof: ProofOfWork, current_user: dict = Depends(get_user_by_token)):
-    """Submit a proof of work for a group job."""
-    job_id = proof.job_id
+@app.post("/groupjobs/submit", status_code=status.HTTP_200_OK)
+async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict = Depends(get_user_by_token)):
+    """
+    Submits a proof of work for a single hash in a group job.
+    """
+    job_id = payload.job_id
+    challenge = payload.challenge # This is one of the hashes from the job's set
+    nonce = payload.nonce
+    hash_found = payload.hash_found
+
     job_key = f"job:{job_id}"
-    hashes_to_solve_key = f"job:{job_id}:hashes_to_solve"
+    hashes_to_solve_key = f"job:{job_id}:hashes"
 
-    if not redis_client.exists(job_key):
-        raise HTTPException(status_code=404, detail="Job not found.")
+    # --- Validation ---
+    if not redis_client.exists(job_key) or redis_client.hget(job_key, "status") != "active":
+        raise HTTPException(status_code=400, detail="This job is no longer active.")
 
-    # Revert to checking if the challenge is in the set of unsolved hashes
-    if not redis_client.sismember(hashes_to_solve_key, proof.challenge):
-        raise HTTPException(status_code=409, detail="Hash already solved or is not part of this job.")
-
-    # Validate the proof of work
-    expected_hash = hashlib.sha256(f"{proof.challenge}{proof.nonce}".encode()).hexdigest()
+    # Verify the proof of work itself
     difficulty = int(redis_client.hget(job_key, "difficulty"))
+    test_string = f"{challenge}{nonce}"
+    verify_hash = hashlib.sha256(test_string.encode()).hexdigest()
 
-    if not (expected_hash == proof.hash_found and expected_hash.startswith('0' * difficulty)):
+    if not (verify_hash == hash_found and verify_hash.startswith('0' * difficulty)):
         raise HTTPException(status_code=400, detail="Invalid proof of work.")
 
-    # --- Proof is valid, process it ---
-    pipe = redis_client.pipeline()
+    # --- Atomically check and claim the hash ---
+    # SREM returns 1 if the element was removed, 0 if it wasn't there (i.e., someone else got it first)
+    if redis_client.srem(hashes_to_solve_key, challenge) == 0:
+        raise HTTPException(status_code=409, detail="Hash already solved by another user. Try again!")
 
-    # Remove the solved hash from the set. SREM returns 1 if removed, 0 if not found.
-    # We use this as a lock to prevent double rewards for the same hash.
-    removed_count = pipe.srem(hashes_to_solve_key, proof.challenge).execute()[0]
-
-    if removed_count == 0:
-        # This means another user's proof for the same hash was processed moments before ours.
-        raise HTTPException(status_code=409, detail="This hash was solved by another user just now.")
-
-    # Award the per-hash reward
+    # --- Award and Update ---
+    user_data_str = redis_client.get(f"user:{current_user['username']}")
+    user_data = json.loads(user_data_str)
+    
     reward_per_hash = float(redis_client.hget(job_key, "reward_per_hash"))
-    user_balance_key = f"balance:{current_user['username']}"
-    new_balance = redis_client.incrbyfloat(user_balance_key, reward_per_hash)
-
-    # Increment hashes completed and user's contribution
-    hashes_completed = redis_client.hincrby(job_key, "hashes_completed", 1)
-    contribution_key = f"job:{job_id}:contributions"
+    
+    user_data["balance"] += reward_per_hash
+    user_data["total_mined"] += reward_per_hash
+    
+    # --- Track Contribution ---
+    contribution_key = f"job:{job_id}:contributors"
+    # HINCRBY will increment the user's contribution count for this job by 1
     redis_client.hincrby(contribution_key, current_user['username'], 1)
 
+    hashes_completed = redis_client.hincrby(job_key, "hashes_completed", 1)
+    
+    # --- Finalize ---
+    pipe = redis_client.pipeline()
+    pipe.set(f"user:{current_user['username']}", json.dumps(user_data))
+    pipe.zadd("leaderboard", {current_user['username']: user_data["balance"]})
+    
+    # Check if this was the final hash
     total_hashes = int(redis_client.hget(job_key, "total_hashes"))
+    job_was_completed = False
+    if hashes_completed >= total_hashes:
+        job_was_completed = True
+        pipe.hset(job_key, "status", "completed")
+        pipe.srem("group_jobs:active", job_id)
+
+    pipe.execute()
+
+    # Add activity log for the individual hash
+    add_activity(current_user['username'], "group_mine", reward_per_hash, f"Job: {job_id[:8]}...")
+
+    # --- Distribute Bonus if Job was Completed ---
+    if job_was_completed:
+        # Recalculate the bonus based on the new structure
+        base_bonus = 0.01
+        size_multiplier = total_hashes / 16
+        
+        difficulty_multipliers = {
+            5: 1.0,
+            6: 1.15,
+            7: 1.3
+        }
+        difficulty = int(redis_client.hget(job_key, "difficulty") or 5)
+        bonus_multiplier = difficulty_multipliers.get(difficulty, 1.0)
+
+        bonus_amount = (base_bonus * size_multiplier) * bonus_multiplier
+        
+        contributors = redis_client.hgetall(contribution_key)
+        total_contributions = sum(int(c) for c in contributors.values())
+
+        if bonus_amount > 0 and total_contributions > 0:
+            bonus_pipe = redis_client.pipeline()
+            user_specific_bonuses = {} # To hold the bonus for each user
+
+            for username, count_str in contributors.items():
+                contribution_count = int(count_str)
+                percentage = contribution_count / total_contributions
+                user_bonus = bonus_amount * percentage
+                user_specific_bonuses[username] = user_bonus
+                
+                # Fetch user, update balance, and save
+                contrib_user_data_str = redis_client.get(f"user:{username}")
+                if contrib_user_data_str:
+                    contrib_user_data = json.loads(contrib_user_data_str)
+                    contrib_user_data["balance"] += user_bonus
+                    
+                    bonus_pipe.set(f"user:{username}", json.dumps(contrib_user_data))
+                    bonus_pipe.zadd("leaderboard", {username: contrib_user_data["balance"]})
+                    
+                    # Use a separate function call for activity log to ensure correct timestamp
+                    add_activity(username, "group_bonus", user_bonus, f"Job: {job_id[:8]} Completed!")
+            
+            bonus_pipe.execute()
+
     final_response = {
-        "message": "Proof accepted.",
-        "reward_earned": reward_per_hash,
-        "new_balance": new_balance,
+        "message": "Proof accepted! Reward granted.",
+        "new_balance": user_data["balance"],
+        "job_id": job_id,
         "hashes_completed": hashes_completed,
         "total_hashes": total_hashes
     }
 
-    # Check if the job is now complete
-    if hashes_completed >= total_hashes:
-        # Distribute bonus
-        bonus = float(redis_client.hget(job_key, "bonus"))
-        contributions = {k: int(v) for k, v in redis_client.hgetall(contribution_key).items()}
-        total_contributions = sum(contributions.values())
-
-        my_bonus = 0
-        if total_contributions > 0:
-            for user, amount in contributions.items():
-                user_share = amount / total_contributions
-                user_bonus = bonus * user_share
-                if user == current_user['username']:
-                    my_bonus = user_bonus
-                redis_client.incrbyfloat(f"balance:{user}", user_bonus)
-                add_activity(user, "group_bonus", user_bonus, f"Job: {job_id[:8]}...")
-
-        # Update job status
-        redis_client.hset(job_key, "status", "completed")
-        redis_client.srem("group_jobs:active", job_id)
-
+    if job_was_completed:
+        my_bonus = user_specific_bonuses.get(current_user['username'], 0)
         final_response["bonus_awarded"] = my_bonus
         final_response["message"] = "Final proof accepted! Job complete. Bonus distributed."
 

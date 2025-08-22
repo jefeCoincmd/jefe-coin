@@ -8,8 +8,6 @@ from pathlib import Path
 import secrets
 import hashlib
 import random # Added for random.choice
-import asyncio
-import websockets
 
 from config import API_BASE_URL, REQUEST_TIMEOUT
 
@@ -475,99 +473,73 @@ class CryptoClient:
         print("Press Ctrl+C to stop mining.")
         print("="*70)
 
-        headers = {"Authorization": f"Bearer {self.token}"}
+        unsolved_challenges = job.get('challenges', [])
         
-        # Fetch the initial list of challenges
-        try:
-            response = requests.get(f"{self.api_url}/groupjobs", headers=headers, timeout=REQUEST_TIMEOUT)
-            if response.status_code == 200:
-                all_jobs = response.json()
-                current_job_data = next((j for j in all_jobs if j['job_id'] == job['job_id']), None)
-                if not current_job_data:
-                    print("❌ Job seems to have disappeared. Returning to menu.")
-                    return
-                unsolved_challenges = current_job_data.get('challenges', [])
-            else:
-                print(f"❌ Could not fetch initial job details (Status: {response.status_code}).")
-                return
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Connection error fetching job details: {e}")
-            return
-
-
         while unsolved_challenges:
             try:
-                # Randomly select a challenge to work on
+                # Pick a random, valid challenge from the list provided by the server
                 challenge = random.choice(unsolved_challenges)
                 target_difficulty = job['difficulty']
-                
-                print(f"Working on random challenge: {challenge[:12]}... [{len(unsolved_challenges)} remaining]")
+                print(f"Now working on challenge: {challenge[:12]}... [{len(unsolved_challenges)} remaining]")
 
-                # Mine for a short burst
                 nonce = 0
                 hash_found = None
+                
+                # A very short, intense burst of mining
                 start_time = time.time()
-                while time.time() - start_time < 5: # 5-second attempt
-                    nonce += 1
+                while time.time() - start_time < 2:
                     test_string = f"{challenge}{nonce}"
                     test_hash = hashlib.sha256(test_string.encode()).hexdigest()
                     if test_hash.startswith('0' * target_difficulty):
                         hash_found = test_hash
                         break
+                    nonce += 1
                 
                 if hash_found:
-                    print("Found a potential proof! Submitting...")
+                    print(f"Found a potential proof! Submitting to server...")
+                    headers = {"Authorization": f"Bearer {self.token}"}
                     payload = {
                         "job_id": job['job_id'],
                         "challenge": challenge,
                         "nonce": nonce,
                         "hash_found": hash_found
                     }
-                    response = requests.post(f"{self.api_url}/groupjobs/submit", headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
+                    response = requests.post(f"{self.api_url}/groupjobs/submit", headers=headers, json=payload)
 
                     if response.status_code == 200:
                         data = response.json()
-                        print(f"✅ SUCCESS! Proof accepted.")
-                        print(f"💰 You earned {data['reward_earned']:.6f} $JEFE. New balance: {data['new_balance']:.6f}.")
+                        print(f"✅ SUCCESS! Your proof was accepted.")
+                        print(f"💰 You earned {job['reward_per_hash']:.6f} $JEFE. Your new balance is {data['new_balance']:.6f}.")
+                        print(f"Job progress: {data['hashes_completed']} / {data['total_hashes']}")
                         
+                        # Remove the solved challenge and continue to the next one
+                        unsolved_challenges.remove(challenge)
+                        
+                        # --- Check for Job Completion ---
                         if "bonus_awarded" in data:
                             print("\n" + "="*70)
                             print("🎉 JOB COMPLETE! 🎉")
                             print(f"As a contributor, you have been awarded a bonus of {data['bonus_awarded']:.6f} $JEFE!")
                             print("="*70)
-                            return # Exit the function
+                            break # Exit the main while loop
 
-                        # Refresh the list of unsolved challenges for the next iteration
-                        refreshed_jobs_response = requests.get(f"{self.api_url}/groupjobs", headers=headers, timeout=REQUEST_TIMEOUT)
-                        if refreshed_jobs_response.status_code == 200:
-                            all_jobs = refreshed_jobs_response.json()
-                            current_job_data = next((j for j in all_jobs if j['job_id'] == job['job_id']), None)
-                            if current_job_data:
-                                unsolved_challenges = current_job_data.get('challenges', [])
-                            else:
-                                unsolved_challenges = [] # Job is gone
-                        else:
-                             unsolved_challenges = [] # Stop if we can't refresh
-
+                        if not unsolved_challenges:
+                            print("\n🏁 All available challenges for this job have been solved from your end!")
+                            break # Exit the main while loop
                     elif response.status_code == 409: # Conflict - hash already solved
-                        print("🟡 Someone else solved that hash. Picking another...")
-                        # Just remove the one we tried from our local list to avoid retrying it immediately
+                        print("🟡 Someone else solved that hash first. Trying a different one...")
                         unsolved_challenges.remove(challenge)
                     else:
                         error_data = response.json()
-                        print(f"❌ Proof rejected: {error_data.get('detail', 'Unknown error')}. Picking another challenge.")
-                        if challenge in unsolved_challenges:
-                            unsolved_challenges.remove(challenge)
-
+                        print(f"❌ Proof rejected by server: {error_data.get('detail', 'Unknown error')}")
+                        print("Restarting mining process...")
+                
             except KeyboardInterrupt:
                 print("\n🛑 Mining stopped by user.")
-                return
+                return # Use return to exit the function immediately
             except requests.exceptions.RequestException as e:
                 print(f"❌ Connection error: {e}. Stopping mining.")
-                return
-            except IndexError: # Catches random.choice on an empty list
-                print("🏁 No more challenges to solve.")
-                break
+                return # Use return to exit the function immediately
         
         print("\n🏁 Group job mining session finished.")
 
