@@ -1,0 +1,4 @@
+# PyInstaller temporary files
+/build/
+/dist/
+*.spec

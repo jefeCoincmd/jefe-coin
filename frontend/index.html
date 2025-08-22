@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CryptoSim Leaderboard</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .stat-card i {
+            font-size: 2.5rem;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .stat-card h3 {
+            font-size: 2rem;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .stat-card p {
+            color: #666;
+            font-size: 1rem;
+        }
+
+        .leaderboard-container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .leaderboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .leaderboard-title {
+            font-size: 2rem;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .refresh-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: transform 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .refresh-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .refresh-btn:active {
+            transform: translateY(0);
+        }
+
+        .leaderboard-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .leaderboard-table th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        .leaderboard-table th:first-child {
+            border-top-left-radius: 10px;
+        }
+
+        .leaderboard-table th:last-child {
+            border-top-right-radius: 10px;
+        }
+
+        .leaderboard-table td {
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .leaderboard-table tr:hover {
+            background-color: rgba(102, 126, 234, 0.1);
+        }
+
+        .rank {
+            font-weight: bold;
+            text-align: center;
+        }
+
+        .rank-1 {
+            color: #ffd700;
+            font-size: 1.2rem;
+        }
+
+        .rank-2 {
+            color: #c0c0c0;
+            font-size: 1.1rem;
+        }
+
+        .rank-3 {
+            color: #cd7f32;
+            font-size: 1.05rem;
+        }
+
+        .username {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .balance, .total-mined {
+            font-family: 'Courier New', monospace;
+            font-weight: 600;
+        }
+
+        .balance {
+            color: #28a745;
+        }
+
+        .total-mined {
+            color: #17a2b8;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .loading i {
+            font-size: 2rem;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            text-align: center;
+            padding: 40px;
+            color: #dc3545;
+        }
+
+        .error i {
+            font-size: 3rem;
+            margin-bottom: 20px;
+        }
+
+        .last-updated {
+            text-align: center;
+            margin-top: 20px;
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .leaderboard-header {
+                flex-direction: column;
+                text-align: center;
+            }
+
+            .leaderboard-table {
+                font-size: 0.9rem;
+            }
+
+            .leaderboard-table th,
+            .leaderboard-table td {
+                padding: 10px 8px;
+            }
+        }
+
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><i class="fas fa-coins"></i> CryptoSim Leaderboard</h1>
+            <p>Real-time cryptocurrency mining competition</p>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <i class="fas fa-users"></i>
+                <h3 id="total-users">-</h3>
+                <p>Total Users</p>
+            </div>
+            <div class="stat-card">
+                <i class="fas fa-coins"></i>
+                <h3 id="total-coins">-</h3>
+                <p>Total Coins Mined</p>
+            </div>
+            <div class="stat-card">
+                <i class="fas fa-trophy"></i>
+                <h3 id="top-balance">-</h3>
+                <p>Top Balance</p>
+            </div>
+            <div class="stat-card">
+                <i class="fas fa-clock"></i>
+                <h3 id="last-update">-</h3>
+                <p>Last Updated</p>
+            </div>
+        </div>
+
+        <div class="leaderboard-container">
+            <div class="leaderboard-header">
+                <h2 class="leaderboard-title">
+                    <i class="fas fa-trophy"></i>
+                    Global Leaderboard
+                </h2>
+                <button class="refresh-btn" onclick="loadLeaderboard()">
+                    <i class="fas fa-sync-alt"></i>
+                    Refresh
+                </button>
+            </div>
+
+            <div id="leaderboard-content">
+                <div class="loading">
+                    <i class="fas fa-spinner"></i>
+                    <p>Loading leaderboard...</p>
+                </div>
+            </div>
+
+            <div class="last-updated">
+                <p>Data updates automatically every 30 seconds</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8000'; // Change this to your deployed API URL
+        let updateInterval;
+
+        async function loadLeaderboard() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/leaderboard`);
+                if (!response.ok) {
+                    throw new Error('Failed to fetch leaderboard');
+                }
+                
+                const leaderboard = await response.json();
+                displayLeaderboard(leaderboard);
+                updateStats(leaderboard);
+                
+                // Update last updated time
+                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+                
+            } catch (error) {
+                console.error('Error loading leaderboard:', error);
+                displayError();
+            }
+        }
+
+        function displayLeaderboard(leaderboard) {
+            const content = document.getElementById('leaderboard-content');
+            
+            if (leaderboard.length === 0) {
+                content.innerHTML = `
+                    <div class="loading">
+                        <i class="fas fa-info-circle"></i>
+                        <p>No users found. Be the first to start mining!</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let tableHTML = `
+                <table class="leaderboard-table">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Username</th>
+                            <th>Balance</th>
+                            <th>Total Mined</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            leaderboard.forEach((entry, index) => {
+                const rankClass = index < 3 ? `rank-${index + 1}` : '';
+                tableHTML += `
+                    <tr>
+                        <td class="rank ${rankClass}">
+                            ${index < 3 ? ['🥇', '🥈', '🥉'][index] : `#${entry.rank}`}
+                        </td>
+                        <td class="username">${entry.username}</td>
+                        <td class="balance">${entry.balance.toFixed(6)}</td>
+                        <td class="total-mined">${entry.total_mined.toFixed(6)}</td>
+                    </tr>
+                `;
+            });
+
+            tableHTML += `
+                    </tbody>
+                </table>
+            `;
+
+            content.innerHTML = tableHTML;
+        }
+
+        function updateStats(leaderboard) {
+            if (leaderboard.length === 0) return;
+
+            // Total users
+            document.getElementById('total-users').textContent = leaderboard.length;
+
+            // Total coins mined
+            const totalMined = leaderboard.reduce((sum, entry) => sum + entry.total_mined, 0);
+            document.getElementById('total-coins').textContent = totalMined.toFixed(6);
+
+            // Top balance
+            const topBalance = Math.max(...leaderboard.map(entry => entry.balance));
+            document.getElementById('top-balance').textContent = topBalance.toFixed(6);
+        }
+
+        function displayError() {
+            const content = document.getElementById('leaderboard-content');
+            content.innerHTML = `
+                <div class="error">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <h3>Failed to load leaderboard</h3>
+                    <p>Please check your connection and try again.</p>
+                </div>
+            `;
+        }
+
+        // Auto-refresh every 30 seconds
+        function startAutoRefresh() {
+            updateInterval = setInterval(loadLeaderboard, 30000);
+        }
+
+        function stopAutoRefresh() {
+            if (updateInterval) {
+                clearInterval(updateInterval);
+            }
+        }
+
+        // Load leaderboard on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadLeaderboard();
+            startAutoRefresh();
+        });
+
+        // Stop auto-refresh when page is hidden
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                stopAutoRefresh();
+            } else {
+                startAutoRefresh();
+            }
+        });
+    </script>
+</body>
+</html>
