@@ -158,6 +158,10 @@ def manage_group_jobs():
         job_id = secrets.token_hex(8)
         job_key = f"job:{job_id}"
         
+        # Check if this job_id somehow already exists to prevent overwriting
+        if redis_client.exists(job_key):
+            continue
+
         total_hashes = random.choice([16, 32, 64])
         difficulty = 5
         reward_per_hash = 0.01 * (total_hashes / 16) # Scale reward with difficulty
@@ -171,14 +175,16 @@ def manage_group_jobs():
             "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
         }
         
-        redis_client.hset(job_key, mapping=job_data)
-        
-        # Create the set of hashes to be solved for this job
+        # Create the set of hashes to be solved for this job FIRST
         hashes_to_solve_key = f"job:{job_id}:hashes"
-        for _ in range(total_hashes):
-            redis_client.sadd(hashes_to_solve_key, secrets.token_hex(16))
-            
-        redis_client.sadd(active_jobs_key, job_id)
+        challenges = [secrets.token_hex(16) for _ in range(total_hashes)]
+        
+        # Use a pipeline to ensure atomicity
+        pipe = redis_client.pipeline()
+        pipe.hset(job_key, mapping=job_data)
+        pipe.sadd(hashes_to_solve_key, *challenges)
+        pipe.sadd(active_jobs_key, job_id)
+        pipe.execute()
 
 def generate_wallet_address():
     """Generate a unique wallet address"""
