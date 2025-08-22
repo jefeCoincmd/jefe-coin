@@ -468,17 +468,30 @@ async def get_group_jobs(current_user: dict = Depends(get_user_by_token)):
     manage_group_jobs() # Ensure jobs are up-to-date before serving
     
     active_job_ids = redis_client.smembers("group_jobs:active")
+    
     jobs = []
     for job_id in active_job_ids:
-        job_data = redis_client.hgetall(f"job:{job_id}")
+        job_key = f"job:{job_id}"
+        job_data = redis_client.hgetall(job_key)
         if job_data:
-            # Also fetch the list of unsolved challenges
-            hashes_to_solve_key = f"job:{job_id}:hashes_to_solve"
-            job_data['challenges'] = list(redis_client.smembers(hashes_to_solve_key))
-            job_data['hashes_completed'] = int(job_data.get('hashes_completed', 0))
-            job_data['reward_per_hash'] = float(job_data.get('reward_per_hash', 0))
-            job_data['bonus'] = float(job_data.get('bonus', 0))
-            jobs.append(GroupJob(**job_data))
+            try:
+                # All values from hgetall are strings, they must be cast to the correct type for the Pydantic model
+                job_data['total_hashes'] = int(job_data.get('total_hashes', 0))
+                job_data['hashes_completed'] = int(job_data.get('hashes_completed', 0))
+                job_data['difficulty'] = int(job_data.get('difficulty', 5))
+                job_data['reward_per_hash'] = float(job_data.get('reward_per_hash', 0))
+                job_data['bonus'] = float(job_data.get('bonus', 0))
+                
+                # Get the remaining challenges
+                hashes_to_solve_key = f"job:{job_id}:hashes_to_solve"
+                job_data['challenges'] = list(redis_client.smembers(hashes_to_solve_key))
+
+                jobs.append(GroupJob(**job_data))
+            except (ValueError, TypeError, KeyError) as e:
+                # This will prevent one malformed job in Redis from crashing the whole endpoint
+                print(f"WARNING: Skipping malformed group job {job_id}. Reason: {e}")
+                continue
+            
     return sorted(jobs, key=lambda j: j.total_hashes)
 
 @app.post("/groupjobs/submit", response_model=dict)
