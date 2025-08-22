@@ -475,110 +475,100 @@ class CryptoClient:
         print("Press Ctrl+C to stop mining.")
         print("="*70)
 
-        # The new logic will be handled in a dedicated async function
-        try:
-            asyncio.run(self.mine_group_job_async(job))
-        except KeyboardInterrupt:
-            print("\n🛑 Mining stopped by user.")
-        except Exception as e:
-            print(f"\nAn unexpected error occurred: {e}")
-
-    async def mine_group_job_async(self, job):
-        """Handles the async mining and websocket communication for a group job."""
-        job_id = job['job_id']
-        ws_url = API_BASE_URL.replace("http", "ws", 1) + f"/ws/{job_id}"
+        headers = {"Authorization": f"Bearer {self.token}"}
         
+        # Fetch the initial list of challenges
         try:
-            async with websockets.connect(ws_url) as websocket:
-                print("✅ Real-time connection to job established.")
+            response = requests.get(f"{self.api_url}/groupjobs", headers=headers, timeout=REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                all_jobs = response.json()
+                current_job_data = next((j for j in all_jobs if j['job_id'] == job['job_id']), None)
+                if not current_job_data:
+                    print("❌ Job seems to have disappeared. Returning to menu.")
+                    return
+                unsolved_challenges = current_job_data.get('challenges', [])
+            else:
+                print(f"❌ Could not fetch initial job details (Status: {response.status_code}).")
+                return
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Connection error fetching job details: {e}")
+            return
+
+
+        while unsolved_challenges:
+            try:
+                # Randomly select a challenge to work on
+                challenge = random.choice(unsolved_challenges)
+                target_difficulty = job['difficulty']
                 
-                # The main mining loop
-                current_challenge = job.get('current_challenge')
-                while current_challenge:
-                    print(f"Working on target challenge: {current_challenge[:12]}...")
+                print(f"Working on random challenge: {challenge[:12]}... [{len(unsolved_challenges)} remaining]")
 
-                    # Start the mining task in a separate process/thread to keep the websocket responsive
-                    # For simplicity in a console app, we'll simulate this with a short, intense mining burst
-                    # and rely on the server to reject stale proofs. A full implementation would use multiprocessing.
-                    
-                    nonce = 0
-                    hash_found = None
-                    start_time = time.time()
-                    
-                    while time.time() - start_time < 5: # Short burst
-                        nonce += 1
-                        test_string = f"{current_challenge}{nonce}"
-                        test_hash = hashlib.sha256(test_string.encode()).hexdigest()
-                        if test_hash.startswith('0' * job['difficulty']):
-                            hash_found = test_hash
-                            break
-                    
-                    if hash_found:
-                        print(f"Found a potential proof! Submitting...")
-                        headers = {"Authorization": f"Bearer {self.token}"}
-                        payload = {"job_id": job_id, "challenge": current_challenge, "nonce": nonce, "hash_found": hash_found}
-                        response = requests.post(f"{self.api_url}/groupjobs/submit", headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
+                # Mine for a short burst
+                nonce = 0
+                hash_found = None
+                start_time = time.time()
+                while time.time() - start_time < 5: # 5-second attempt
+                    nonce += 1
+                    test_string = f"{challenge}{nonce}"
+                    test_hash = hashlib.sha256(test_string.encode()).hexdigest()
+                    if test_hash.startswith('0' * target_difficulty):
+                        hash_found = test_hash
+                        break
+                
+                if hash_found:
+                    print("Found a potential proof! Submitting...")
+                    payload = {
+                        "job_id": job['job_id'],
+                        "challenge": challenge,
+                        "nonce": nonce,
+                        "hash_found": hash_found
+                    }
+                    response = requests.post(f"{self.api_url}/groupjobs/submit", headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
 
-                        if response.status_code == 200:
-                            data = response.json()
-                            print(f"✅ SUCCESS! Your proof was accepted.")
-                            print(f"💰 You earned {job['reward_per_hash']:.6f} $JEFE. New balance: {data['new_balance']:.6f}.")
+                    if response.status_code == 200:
+                        data = response.json()
+                        print(f"✅ SUCCESS! Proof accepted.")
+                        print(f"💰 You earned {data['reward_earned']:.6f} $JEFE. New balance: {data['new_balance']:.6f}.")
+                        
+                        if "bonus_awarded" in data:
+                            print("\n" + "="*70)
+                            print("🎉 JOB COMPLETE! 🎉")
+                            print(f"As a contributor, you have been awarded a bonus of {data['bonus_awarded']:.6f} $JEFE!")
+                            print("="*70)
+                            return # Exit the function
+
+                        # Refresh the list of unsolved challenges for the next iteration
+                        refreshed_jobs_response = requests.get(f"{self.api_url}/groupjobs", headers=headers, timeout=REQUEST_TIMEOUT)
+                        if refreshed_jobs_response.status_code == 200:
+                            all_jobs = refreshed_jobs_response.json()
+                            current_job_data = next((j for j in all_jobs if j['job_id'] == job['job_id']), None)
+                            if current_job_data:
+                                unsolved_challenges = current_job_data.get('challenges', [])
+                            else:
+                                unsolved_challenges = [] # Job is gone
                         else:
-                            # Proof was rejected, likely because the target changed.
-                            try:
-                                error_detail = response.json().get('detail', 'Unknown error')
-                                print(f"❌ Proof rejected: {error_detail}")
-                                
-                                # Since our proof was rejected, we are out of sync.
-                                # Proactively fetch the current state to resync.
-                                print("    Resyncing with server to get latest target...")
-                                headers = {"Authorization": f"Bearer {self.token}"}
-                                refreshed_jobs_response = requests.get(f"{self.api_url}/groupjobs", headers=headers, timeout=REQUEST_TIMEOUT)
-                                if refreshed_jobs_response.status_code == 200:
-                                    refreshed_jobs = refreshed_jobs_response.json()
-                                    current_job_data = next((j for j in refreshed_jobs if j['job_id'] == job_id), None)
-                                    if current_job_data and current_job_data.get('current_challenge'):
-                                        new_challenge = current_job_data.get('current_challenge')
-                                        if new_challenge != current_challenge:
-                                            print(f"    Server assigned new target: {new_challenge[:12]}...")
-                                            current_challenge = new_challenge
-                                        else:
-                                            print("    Target is the same. There might be another issue.")
-                                    else:
-                                        print("    Job seems to be complete or gone. Stopping.")
-                                        current_challenge = None # This will stop the loop
-                                else:
-                                    print("    Failed to resync with server. Stopping.")
-                                    current_challenge = None # This will stop the loop
-                            except (requests.exceptions.JSONDecodeError, json.JSONDecodeError):
-                                print(f"❌ Proof rejected with status {response.status_code}, and response was not valid JSON.")
-                                current_challenge = None # Stop on weird errors
+                             unsolved_challenges = [] # Stop if we can't refresh
 
-                    # --- Listen for updates from the server ---
-                    try:
-                        message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
-                        data = json.loads(message)
-                        if data.get('type') == 'new_target':
-                            new_challenge = data['new_challenge']
-                            # Only print and switch if it's a genuinely new challenge
-                            if new_challenge != current_challenge:
-                                print(f"\n>> R E A L - T I M E   U P D A T E <<")
-                                print(f"Server assigned new target: {new_challenge[:12]}...")
-                                current_challenge = new_challenge
-                                continue # Immediately start next loop on the new challenge
-                        elif data.get('type') == 'job_complete':
-                            print("\n🎉 JOB COMPLETE! 🎉 A final proof was submitted by the community.")
-                            current_challenge = None # This will stop the main while loop
-                            break
-                    except asyncio.TimeoutError:
-                        # No message from server, continue mining the same challenge
-                        pass
+                    elif response.status_code == 409: # Conflict - hash already solved
+                        print("🟡 Someone else solved that hash. Picking another...")
+                        # Just remove the one we tried from our local list to avoid retrying it immediately
+                        unsolved_challenges.remove(challenge)
+                    else:
+                        error_data = response.json()
+                        print(f"❌ Proof rejected: {error_data.get('detail', 'Unknown error')}. Picking another challenge.")
+                        if challenge in unsolved_challenges:
+                            unsolved_challenges.remove(challenge)
 
-        except websockets.exceptions.ConnectionClosed as e:
-            print(f"❌ Real-time connection to job lost: {e}")
-        except Exception as e:
-            print(f"❌ An error occurred during the mining session: {e}")
-
+            except KeyboardInterrupt:
+                print("\n🛑 Mining stopped by user.")
+                return
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Connection error: {e}. Stopping mining.")
+                return
+            except IndexError: # Catches random.choice on an empty list
+                print("🏁 No more challenges to solve.")
+                break
+        
         print("\n🏁 Group job mining session finished.")
 
     def main_menu(self):
