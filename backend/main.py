@@ -461,13 +461,13 @@ async def admin_clear_jobs():
     return {"message": f"Successfully deleted {len(active_job_ids)} active jobs. New jobs will be generated on the next request to /groupjobs."}
 
 @app.get("/groupjobs", response_model=List[GroupJob])
-async def get_group_jobs(current_user: dict = Depends(get_user_by_token)):
-    """
-    Manages and retrieves the list of active group jobs.
-    """
-    manage_group_jobs() # Ensure jobs are up-to-date before serving
-    
-    active_job_ids = redis_client.smembers("group_jobs:active")
+async def list_group_jobs(current_user: dict = Depends(get_user_by_token)):
+    """List all active group jobs."""
+    # Ensure there are jobs to be listed. This will create new ones if none are active.
+    manage_group_jobs()
+
+    active_jobs_key = "group_jobs:active"
+    active_job_ids = redis_client.smembers(active_jobs_key)
     
     jobs = []
     for job_id in active_job_ids:
