@@ -477,6 +477,23 @@ async def get_group_jobs(current_user: dict = Depends(get_user_by_token)):
             jobs.append(GroupJob(job_id=job_id, **job_data))
     return sorted(jobs, key=lambda j: j.total_hashes)
 
+
+@app.get("/groupjob/{job_id}", response_model=GroupJob)
+async def get_group_job(job_id: str, current_user: dict = Depends(get_user_by_token)):
+    """
+    Retrieves the details of a single group job.
+    """
+    job_key = f"job:{job_id}"
+    if not redis_client.exists(job_key):
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    job_data = redis_client.hgetall(job_key)
+    challenges = redis_client.smembers(f"job:{job_id}:hashes")
+    job_data['challenges'] = list(challenges)
+
+    return GroupJob(job_id=job_id, **job_data)
+
+
 @app.post("/groupjobs/submit", status_code=status.HTTP_200_OK)
 async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict = Depends(get_user_by_token)):
     """
@@ -505,7 +522,34 @@ async def submit_group_job_proof(payload: SubmitProofPayload, current_user: dict
     # --- Atomically check and claim the hash ---
     # SREM returns 1 if the element was removed, 0 if it wasn't there (i.e., someone else got it first)
     if redis_client.srem(hashes_to_solve_key, challenge) == 0:
-        raise HTTPException(status_code=409, detail="Hash already solved by another user. Try again!")
+        # This hash was already solved. Give a small reward for the effort.
+        user_data_str = redis_client.get(f"user:{current_user['username']}")
+        user_data = json.loads(user_data_str)
+        
+        reward_per_hash = float(redis_client.hget(job_key, "reward_per_hash"))
+        consolation_reward = reward_per_hash * 0.10  # 10% reward
+
+        user_data["balance"] += consolation_reward
+        # We don't add this to total_mined as it wasn't a "new" find
+        
+        redis_client.set(f"user:{current_user['username']}", json.dumps(user_data))
+        redis_client.zadd("leaderboard", {current_user['username']: user_data["balance"]})
+
+        add_activity(current_user['username'], "group_mine_dup", consolation_reward, f"Job: {job_id[:8]} (duplicate)")
+
+        # We must NOT increment hashes_completed here
+        hashes_completed = int(redis_client.hget(job_key, "hashes_completed") or 0)
+        total_hashes = int(redis_client.hget(job_key, "total_hashes"))
+
+        return {
+            "message": "This proof was already submitted, but you've been awarded a small bonus for your effort!",
+            "is_duplicate": True,
+            "bonus_awarded": consolation_reward,
+            "new_balance": user_data["balance"],
+            "job_id": job_id,
+            "hashes_completed": hashes_completed,
+            "total_hashes": total_hashes
+        }
 
     # --- Award and Update ---
     user_data_str = redis_client.get(f"user:{current_user['username']}")

@@ -474,72 +474,126 @@ class CryptoClient:
         print("="*70)
 
         unsolved_challenges = job.get('challenges', [])
+        last_refresh_time = time.time()
         
         while unsolved_challenges:
             try:
                 # Pick a random, valid challenge from the list provided by the server
                 challenge = random.choice(unsolved_challenges)
                 target_difficulty = job['difficulty']
-                print(f"Now working on challenge: {challenge[:12]}... [{len(unsolved_challenges)} remaining]")
+                print(f"\nNow working on challenge: {challenge[:12]}... [{len(unsolved_challenges)} remaining]")
 
                 nonce = 0
                 hash_found = None
                 
-                # A very short, intense burst of mining
-                start_time = time.time()
-                while time.time() - start_time < 2:
+                # Persistent mining loop for a single challenge
+                while True:
+                    # Refresh job status every 3 seconds
+                    if time.time() - last_refresh_time > 3:
+                        print("\n🔄 Refreshing job status...")
+                        try:
+                            headers = {"Authorization": f"Bearer {self.token}"}
+                            response = requests.get(f"{self.api_url}/groupjob/{job['job_id']}", headers=headers, timeout=REQUEST_TIMEOUT)
+                            
+                            if response.status_code == 200:
+                                updated_job = response.json()
+                                unsolved_challenges = updated_job.get('challenges', [])
+                                
+                                if updated_job.get('status') == 'completed':
+                                    print("🎉 This job has been completed by the team! Stopping mining.")
+                                    return # Exit function entirely
+                                
+                                if not unsolved_challenges:
+                                    print("🏁 All challenges for this job are solved. Stopping mining.")
+                                    return # Exit function entirely
+
+                                if challenge not in unsolved_challenges:
+                                    print("🟡 Someone else solved this challenge. Switching to a new one.")
+                                    break # Exit inner loop to pick a new challenge
+                                
+                                print(f"✅ Job status updated. {len(unsolved_challenges)} challenges remaining.")
+                            else:
+                                print("⚠️ Could not refresh job status from server.")
+                        
+                        except requests.exceptions.RequestException as e:
+                            print(f"❌ Connection error during refresh: {e}")
+                        
+                        last_refresh_time = time.time()
+
+                    # Perform mining work
                     test_string = f"{challenge}{nonce}"
                     test_hash = hashlib.sha256(test_string.encode()).hexdigest()
                     if test_hash.startswith('0' * target_difficulty):
                         hash_found = test_hash
-                        break
+                        break # Found a hash, exit inner loop to submit
+                    
                     nonce += 1
-                
-                if hash_found:
-                    print(f"Found a potential proof! Submitting to server...")
-                    headers = {"Authorization": f"Bearer {self.token}"}
-                    payload = {
-                        "job_id": job['job_id'],
-                        "challenge": challenge,
-                        "nonce": nonce,
-                        "hash_found": hash_found
-                    }
-                    response = requests.post(f"{self.api_url}/groupjobs/submit", headers=headers, json=payload)
+                    # Small sleep to prevent pegging the CPU
+                    if nonce % 100000 == 0:
+                        time.sleep(0.01)
 
-                    if response.status_code == 200:
-                        data = response.json()
+                # If the inner loop was broken due to a refresh, hash_found will be None
+                if not hash_found:
+                    continue # Go to the next iteration of the outer while loop to get a new challenge
+
+                # --- Submit the found proof ---
+                print(f"\nFound a potential proof! Submitting to server...")
+                headers = {"Authorization": f"Bearer {self.token}"}
+                payload = {
+                    "job_id": job['job_id'],
+                    "challenge": challenge,
+                    "nonce": nonce,
+                    "hash_found": hash_found
+                }
+                response = requests.post(f"{self.api_url}/groupjobs/submit", headers=headers, json=payload)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    if data.get("is_duplicate"):
+                        print(f"🟡 That hash was already solved, but you earned a small bonus of {data['bonus_awarded']:.6f} $JEFE.")
+                        print(f"Your new balance is {data['new_balance']:.6f}.")
+                    else:
                         print(f"✅ SUCCESS! Your proof was accepted.")
                         print(f"💰 You earned {job['reward_per_hash']:.6f} $JEFE. Your new balance is {data['new_balance']:.6f}.")
                         print(f"Job progress: {data['hashes_completed']} / {data['total_hashes']}")
-                        
-                        # Remove the solved challenge and continue to the next one
+                    
+                    # Remove the solved challenge and continue to the next one
+                    if challenge in unsolved_challenges:
                         unsolved_challenges.remove(challenge)
-                        
-                        # --- Check for Job Completion ---
-                        if "bonus_awarded" in data:
-                            print("\n" + "="*70)
-                            print("🎉 JOB COMPLETE! 🎉")
-                            print(f"As a contributor, you have been awarded a bonus of {data['bonus_awarded']:.6f} $JEFE!")
-                            print("="*70)
-                            break # Exit the main while loop
+                    
+                    # --- Check for Job Completion (only for non-duplicates) ---
+                    if not data.get("is_duplicate") and "bonus_awarded" in data:
+                        print("\n" + "="*70)
+                        print("🎉 JOB COMPLETE! 🎉")
+                        print(f"As a contributor, you have been awarded a bonus of {data['bonus_awarded']:.6f} $JEFE!")
+                        print("="*70)
+                        return # Exit the function
 
-                        if not unsolved_challenges:
-                            print("\n🏁 All available challenges for this job have been solved from your end!")
-                            break # Exit the main while loop
-                    elif response.status_code == 409: # Conflict - hash already solved
-                        print("🟡 Someone else solved that hash first. Trying a different one...")
-                        unsolved_challenges.remove(challenge)
-                    else:
-                        error_data = response.json()
-                        print(f"❌ Proof rejected by server: {error_data.get('detail', 'Unknown error')}")
-                        print("Restarting mining process...")
+                    if not unsolved_challenges:
+                        print("\n🏁 All available challenges for this job have been solved from your end!")
+                        return # Exit the function
                 
+                elif response.status_code == 409: # Conflict - hash already solved
+                    print("🟡 Someone else solved that hash just before you. Trying a different one...")
+                    if challenge in unsolved_challenges:
+                        unsolved_challenges.remove(challenge)
+                
+                else:
+                    error_data = response.json()
+                    print(f"❌ Proof rejected by server: {error_data.get('detail', 'Unknown error')}. Trying a different challenge.")
+                    if challenge in unsolved_challenges:
+                        unsolved_challenges.remove(challenge)
+
             except KeyboardInterrupt:
                 print("\n🛑 Mining stopped by user.")
                 return # Use return to exit the function immediately
             except requests.exceptions.RequestException as e:
                 print(f"❌ Connection error: {e}. Stopping mining.")
                 return # Use return to exit the function immediately
+            except IndexError:
+                print("\n🏁 No more challenges available to work on for this job.")
+                return
         
         print("\n🏁 Group job mining session finished.")
 
